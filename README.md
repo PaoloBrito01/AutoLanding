@@ -1,5 +1,9 @@
 # AutoLanding — Spaceflight Simulator Mod
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-3.1.0-blue.svg)](../../releases)
+[![BepInEx](https://img.shields.io/badge/BepInEx-5.4.x-green.svg)](https://github.com/BepInEx/BepInEx/releases)
+
 Automatic rocket landing autopilot for **Spaceflight Simulator** (Steam/PC).  
 Press **F8** to toggle. Works on any celestial body.
 
@@ -23,7 +27,7 @@ Press **F8** to toggle. Works on any celestial body.
 ## Installation
 
 1. Install **BepInEx 5.4.x** if you haven't already — follow the [BepInEx installation guide](https://docs.bepinex.dev/articles/user_guide/installation/index.html)
-2. Download `AutoLanding.dll` from the [Releases](../../releases) page
+2. Download `AutoLanding.zip` from the [Releases](../../releases) page and extract it
 3. Copy `AutoLanding.dll` to:
    ```
    <SFS game folder>\BepInEx\plugins\AutoLanding.dll
@@ -40,7 +44,7 @@ Once activated, a **HUD window** appears in the top-left corner showing:
 
 | Field | Description |
 |-------|-------------|
-| Estado | Current phase: Coast / Freada / Final / Landed |
+| Estado | Current phase: Coast / Braking / Final / Landed |
 | Altitude | Height above terrain (m) |
 | VSpeed | Vertical speed (m/s, negative = descending) |
 | HSpeed | Horizontal speed (m/s) |
@@ -83,13 +87,3 @@ An **emergency governor** overrides to full throttle if the burn margin drops be
 ## License
 
 [MIT](LICENSE)
-
----
-
-## Português
-
-**Pouso automático para Spaceflight Simulator.** Pressione **F8** para ativar/desativar.  
-Após ativar, o autopiloto assume o controle dos motores e pousa o foguete com velocidade de toque ≤ 0.35 m/s.  
-Funciona em qualquer planeta (Lua, Marte, planetas customizados) — lê a gravidade local em tempo real.
-
-**Instalação:** Instale BepInEx 5.4.x → baixe `AutoLanding.dll` da aba [Releases](../../releases) → copie para `BepInEx\plugins\`.
