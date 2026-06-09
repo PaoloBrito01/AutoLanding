@@ -7,7 +7,7 @@
 Automatic rocket landing autopilot for **Spaceflight Simulator** (Steam/PC).  
 Press **F8** to toggle. Works on any celestial body.
 
-<img width="800" height="450" alt="AutoLanding demo" src="https://github.com/user-attachments/assets/b65006a0-5da9-4858-a13a-03f76e7114d5" />
+![AutoLanding demo](https://github.com/user-attachments/assets/b65006a0-5da9-4858-a13a-03f76e7114d5)
 
 ---
 
