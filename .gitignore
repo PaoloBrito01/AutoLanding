@@ -1,0 +1,13 @@
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.lock.json
+
+# Local build config (contains your personal game path — do not commit)
+Directory.Build.props
+
+# Dev notes not meant for the repo
+daily.txt
+PROCESSO.md

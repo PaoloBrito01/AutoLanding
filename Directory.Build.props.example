@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <!-- Path to your Spaceflight Simulator game folder.
+         Copy this file to Directory.Build.props (gitignored) and adjust the path. -->
+    <SFSGamePath>C:\Program Files (x86)\Steam\steamapps\common\Spaceflight Simulator\Spaceflight Simulator Game</SFSGamePath>
+  </PropertyGroup>
+</Project>
