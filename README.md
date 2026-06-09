@@ -87,3 +87,8 @@ An **emergency governor** overrides to full throttle if the burn margin drops be
 ## License
 
 [MIT](LICENSE)
+
+<img width="800" height="450" alt="Spaceflight Simulator - 2026-05-24 23-45-58 (1)" src="https://github.com/user-attachments/assets/b65006a0-5da9-4858-a13a-03f76e7114d5" />
+
+
+
