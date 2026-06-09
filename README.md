@@ -5,7 +5,6 @@
 [![BepInEx](https://img.shields.io/badge/BepInEx-5.4.x-green.svg)](https://github.com/BepInEx/BepInEx/releases)
 
 Automatic rocket landing autopilot for **Spaceflight Simulator** (Steam/PC).  
-Press **F8** to toggle. Works on any celestial body.
 
 ![AutoLanding demo](https://github.com/user-attachments/assets/b65006a0-5da9-4858-a13a-03f76e7114d5)
 
