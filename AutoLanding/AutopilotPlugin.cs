@@ -11,18 +11,20 @@ namespace AutoLanding
 {
     internal sealed class PidController
     {
-        public float Kp, Ki, Kd;
+        public float Kp;
+        public float Ki;
+        public float Kd;
         public float MaxIntegral = 20f;
 
         private float _integral;
         private float _prevError;
-        private bool _fresh = true;
+        private bool _firstUpdate = true;
 
         public void Reset()
         {
             _integral = 0f;
             _prevError = 0f;
-            _fresh = true;
+            _firstUpdate = true;
         }
 
         public float Update(float error, float dt)
@@ -34,11 +36,11 @@ namespace AutoLanding
 
             _integral = newIntegral;
 
-            float deriv = _fresh
+            float deriv = _firstUpdate
                 ? 0f
                 : (error - _prevError) / Mathf.Max(dt, 0.001f);
 
-            _fresh = false;
+            _firstUpdate = false;
             _prevError = error;
 
             return Kp * error + Ki * _integral + Kd * deriv;
@@ -47,23 +49,23 @@ namespace AutoLanding
 
     internal sealed class AngularController
     {
-        private const float WN = 3.0f;
-        private const float ZETA = 1.0f;
-        private const float MAX_TORQUE_RATIO = 80f;
+        private const float Wn = 3.0f;
+        private const float Zeta = 1.0f;
+        private const float MaxTorqueRatio = 80f;
+        private const float MaxTiltDeg = 8f;
 
-        private static float Kp => WN * WN;
-        private static float Kd => 2f * ZETA * WN;
+        private static float Kp => Wn * Wn;
+        private static float Kd => 2f * Zeta * Wn;
 
-        // surfaceNormalDeg : ângulo world-space para apontar perpendicularmente à superfície.
-        // signedHVel       : velocidade horizontal assinada no ref. de superfície (leste = +).
-        //                    Positivo = inclina CW (empurra de volta contra o leste).
+        // signedHVel: signed horizontal speed in surface frame (east = +).
+        // Positive = tilt CW to push thrust against eastward drift.
         public void Apply(Rigidbody2D rb2d, float surfaceNormalDeg, float signedHVel)
         {
             float inertia = Mathf.Max(rb2d.inertia, 0.001f);
 
-            // 1 grau por m/s, limitado a ±8°. Sinal negativo porque:
-            // hVel > 0 (leste) → inclina CW → componente de empuxo oposta ao leste.
-            float lateralTilt = Mathf.Clamp(-signedHVel * 1.0f, -8f, 8f);
+            // 1 deg per m/s of drift, clamped to ±MaxTiltDeg.
+            // Negative sign: hVel > 0 (east) → tilt CW → thrust opposes east.
+            float lateralTilt = Mathf.Clamp(-signedHVel, -MaxTiltDeg, MaxTiltDeg);
             float targetAngle = NormalizeDeg(surfaceNormalDeg + lateralTilt);
             float currentAngle = NormalizeDeg(rb2d.rotation);
             float angleError = NormalizeDeg(currentAngle - targetAngle);
@@ -72,8 +74,7 @@ namespace AutoLanding
             float angVelRad = rb2d.angularVelocity * Mathf.Deg2Rad;
 
             float torque = -(Kp * angleRad + Kd * angVelRad) * inertia;
-
-            float maxTorque = rb2d.mass * MAX_TORQUE_RATIO;
+            float maxTorque = rb2d.mass * MaxTorqueRatio;
 
             rb2d.AddTorque(Mathf.Clamp(torque, -maxTorque, maxTorque));
         }
@@ -84,13 +85,8 @@ namespace AutoLanding
         private static float NormalizeDeg(float deg)
         {
             deg %= 360f;
-
-            if (deg > 180f)
-                deg -= 360f;
-
-            if (deg < -180f)
-                deg += 360f;
-
+            if (deg > 180f)  deg -= 360f;
+            if (deg < -180f) deg += 360f;
             return deg;
         }
     }
@@ -98,14 +94,14 @@ namespace AutoLanding
     [BepInPlugin("com.sfsmod.autolanding", "Auto Landing", "3.1.0")]
     public class AutoLandingPlugin : BaseUnityPlugin
     {
-        public static ManualLogSource Log;
+        internal static ManualLogSource Log = null!;
 
-        private AutopilotBehaviour _autopilot;
+        private AutopilotBehaviour? _autopilot;
 
         private void Awake()
         {
             Log = Logger;
-            Logger.LogInfo("AutoLanding v3.1 — F8 = ativar/desativar");
+            Logger.LogInfo("AutoLanding v3.1 loaded — press F8 to toggle");
         }
 
         private void Update()
@@ -116,32 +112,52 @@ namespace AutoLanding
             if (_autopilot == null)
             {
                 _autopilot = gameObject.AddComponent<AutopilotBehaviour>();
-                Logger.LogInfo("Autopilot ATIVADO");
+                Logger.LogInfo("Autopilot enabled");
             }
             else
             {
                 Destroy(_autopilot);
                 _autopilot = null;
-                Logger.LogInfo("Autopilot DESATIVADO");
+                Logger.LogInfo("Autopilot disabled");
             }
         }
     }
 
-    public class AutopilotBehaviour : MonoBehaviour
+    internal class AutopilotBehaviour : MonoBehaviour
     {
-        private const float FINAL_ALT = 25f;
+        // Phase thresholds
+        private const float FinalAlt = 25f;
+        private const float LandAlt = 0.3f;
+        private const float VTouch = 0.35f;
+        private const double SafetyFactor = 1.35;
 
-        private const float LAND_ALT = 0.3f;
+        // Emergency governor
+        private const double EmergencyAlt = 200.0;
+        private const double EmergencyVd = 30.0;
+        private const double EmergencyBurnRatio = 0.85;
+        private const double NearSuicideThreshold = 0.90;
+        private const double MinAltitudeForBurnRatio = 1.0;
 
-        private const float V_TOUCH = 0.35f;
+        // Braking phase targets
+        private const double BrakingProfileMargin = 0.85;
+        private const double FreefallFraction = 0.32;
+        private const double BrakingEmergencyFactor = 1.3;
 
-        private const double SAFETY_FACTOR = 1.35;
+        // Final phase
+        private const float ThrottleFloorMargin = 0.10f;
+        private const float FinalFlareAlt1 = 2.5f;
+        private const float FinalFlareVd1 = 1.2f;
+        private const float FinalFlareAlt2 = 0.8f;
+        private const float FinalFlareVd2 = 0.6f;
 
-        private const double EMERGENCY_ALT        = 200.0;
-        private const double EMERGENCY_VD         = 30.0;
-        private const double EMERGENCY_BURN_RATIO = 0.85;
+        // Misc
+        private const float LandingVSpeedThreshold = 0.5f;
+        private const float MinCosAngle = 0.5f;
+        private const float ThrottleCutThreshold = 0.01f;
+        private const float ThrRise = 12f;
+        private const float ThrFall = 6f;
 
-        private readonly PidController _velPid = new PidController
+        private readonly PidController _velocityPid = new PidController
         {
             Kp = 0.25f,
             Ki = 0.0f,
@@ -149,26 +165,16 @@ namespace AutoLanding
             MaxIntegral = 15f,
         };
 
-        private readonly AngularController _angCtrl = new AngularController();
+        private readonly AngularController _attitudeController = new AngularController();
 
-        private const float THR_RISE = 12f;
-        private const float THR_FALL = 6f;
-
-        private enum State
-        {
-            Coast,
-            Freada,
-            Final,
-            Landed
-        }
+        private enum State { Coast, Braking, Final, Landed }
 
         private State _state = State.Coast;
-
         private float _throttle = 0f;
-        private double _vProfile = 0;
-        private double _burnAlt = 0;
-        private float _twr = 0f;
-        private double _hVel = 0;
+        private double _velocityProfile = 0;
+        private double _burnAltitude = 0;
+        private float _thrustWeightRatio = 0f;
+        private double _horizontalVelocity = 0;
 
         private Rect _windowRect = new Rect(10, 120, 320, 210);
 
@@ -177,42 +183,31 @@ namespace AutoLanding
             if (GetRocket() == null)
                 return;
 
-            _windowRect = GUI.Window(
-                98765,
-                _windowRect,
-                DrawHUD,
-                "Auto Landing v3.1");
+            _windowRect = GUI.Window(98765, _windowRect, DrawHUD, "Auto Landing v3.1");
         }
 
         private void DrawHUD(int id)
         {
             var rocket = GetRocket();
-
             if (rocket == null)
                 return;
 
             var loc = rocket.location.Value;
-
-            double h = Math.Max(0, loc.GetTerrainHeight(true));
-            double vSpd = loc.VerticalVelocity;
+            double altitude = Math.Max(0, loc.GetTerrainHeight(true));
+            double verticalSpeed = loc.VerticalVelocity;
 
             int y = 20;
+            void DrawLine(string s) { GUI.Label(new Rect(8, y, 300, 20), s); y += 20; }
 
-            void L(string s)
-            {
-                GUI.Label(new Rect(8, y, 300, 20), s);
-                y += 20;
-            }
-
-            L($"Estado: {_state}");
-            L($"Altitude: {h:F1} m");
-            L($"VSpeed: {vSpd:F1} m/s");
-            L($"HSpeed: {_hVel:F1} m/s");
-            L($"Throttle: {_throttle * 100f:F0}%");
-            L($"BurnAlt: {_burnAlt:F1} m");
-            L($"VProfile: {_vProfile:F1} m/s");
-            L($"TWR: {_twr:F2}");
-            L($"G: {loc.planet.GetGravity(loc.Radius):F2} m/s²");
+            DrawLine($"State:    {_state}");
+            DrawLine($"Altitude: {altitude:F1} m");
+            DrawLine($"VSpeed:   {verticalSpeed:F1} m/s");
+            DrawLine($"HSpeed:   {_horizontalVelocity:F1} m/s");
+            DrawLine($"Throttle: {_throttle * 100f:F0}%");
+            DrawLine($"BurnAlt:  {_burnAltitude:F1} m");
+            DrawLine($"VProfile: {_velocityProfile:F1} m/s");
+            DrawLine($"TWR:      {_thrustWeightRatio:F2}");
+            DrawLine($"G:        {loc.planet.GetGravity(loc.Radius):F2} m/s²");
 
             GUI.DragWindow(new Rect(0, 0, 320, 20));
         }
@@ -231,27 +226,25 @@ namespace AutoLanding
                 return;
 
             float dt = Time.fixedDeltaTime;
-
             var loc = rocket.location.Value;
 
-            // Gravidade real do planeta na altitude atual (funciona na Lua, Marte, planetas customizados).
-            float localG = (float)loc.planet.GetGravity(loc.Radius);
+            // Real gravity at current altitude — works on Moon, Mars, custom planets.
+            float gravity = (float)loc.planet.GetGravity(loc.Radius);
 
-            double h = Math.Max(0, loc.GetTerrainHeight(true));
-            double vd = -loc.VerticalVelocity;
+            double altitude = Math.Max(0, loc.GetTerrainHeight(true));
+            double descentSpeed = -loc.VerticalVelocity;
 
-            // Velocidade horizontal assinada no referencial de superfície.
-            // posAngle: ângulo do vetor posição (centro do planeta → foguete).
-            // A direção "leste" (CCW) é perpendicular ao vetor radial.
+            // Signed horizontal speed in surface frame.
+            // posAngle: angle of position vector (planet center → rocket).
+            // East direction (CCW) is perpendicular to the radial vector.
             double posAngle = loc.position.AngleRadians;
-            _hVel = -loc.velocity.x * Math.Sin(posAngle)
-                  +  loc.velocity.y * Math.Cos(posAngle);
+            _horizontalVelocity = -loc.velocity.x * Math.Sin(posAngle)
+                                 +  loc.velocity.y * Math.Cos(posAngle);
 
-            // Ângulo que o foguete deve ter (world-space) para apontar radialmente.
+            // World-space angle the rocket must have to point radially outward.
             float surfaceNormalDeg = (float)(posAngle * 180.0 / Math.PI) - 90f;
 
             var engines = rocket.partHolder.GetModules<EngineModule>();
-
             float maxThrust = engines.Sum(e => e.thrust.Value);
             float mass = rocket.rb2d.mass;
 
@@ -261,21 +254,20 @@ namespace AutoLanding
                 return;
             }
 
-            // Inclinação real em relação à normal de superfície (não ao eixo global).
-            // rb2d.rotation é absoluto (world-space); subtraímos a normal para obter
-            // o ângulo de tilt real, independente de onde o foguete está no planeta.
+            // Tilt relative to surface normal, not the global axis.
+            // rb2d.rotation is world-space; subtract normal to get actual tilt
+            // regardless of where the rocket is on the planet.
             float worldAngle = AngularController.AngleDeg(rocket.rb2d);
-            float tiltDeg    = worldAngle - surfaceNormalDeg;
+            float tiltDeg = worldAngle - surfaceNormalDeg;
             tiltDeg = ((tiltDeg + 180f) % 360f + 360f) % 360f - 180f;
-            float angleRad   = Mathf.Abs(tiltDeg) * Mathf.Deg2Rad;
+            float angleRad = Mathf.Abs(tiltDeg) * Mathf.Deg2Rad;
 
-            float cosAngle = Mathf.Max(Mathf.Cos(angleRad), 0.5f);
-
-            float maxAccel = maxThrust * localG / mass;
+            float cosAngle = Mathf.Max(Mathf.Cos(angleRad), MinCosAngle);
+            float maxAccel = maxThrust * gravity / mass;
             float effectiveAccel = maxAccel * cosAngle;
-            float netDecel = effectiveAccel - localG;
+            float netDecel = effectiveAccel - gravity;
 
-            _twr = maxAccel / localG;
+            _thrustWeightRatio = maxAccel / gravity;
 
             if (netDecel <= 0)
             {
@@ -283,10 +275,8 @@ namespace AutoLanding
                 return;
             }
 
-            // ==========================
-            // DETECÇÃO DE POUSO
-            // ==========================
-            if (h < LAND_ALT && Math.Abs(vd) < 0.5)
+            // Landing detection
+            if (altitude < LandAlt && Math.Abs(descentSpeed) < LandingVSpeedThreshold)
             {
                 _state = State.Landed;
                 CutEngines(rocket);
@@ -294,25 +284,17 @@ namespace AutoLanding
                 return;
             }
 
-            // ==========================
-            // PERFIL PRINCIPAL
-            // ==========================
-            _burnAlt = Math.Max(
-                0,
-                (vd * vd - V_TOUCH * V_TOUCH) / (2.0 * netDecel));
+            // Main burn profile
+            _burnAltitude = Math.Max(0, (descentSpeed * descentSpeed - VTouch * VTouch) / (2.0 * netDecel));
+            _velocityProfile = Math.Sqrt(2.0 * netDecel * altitude + VTouch * VTouch);
 
-            _vProfile = Math.Sqrt(
-                2.0 * netDecel * h + V_TOUCH * V_TOUCH);
+            if (_state == State.Coast && altitude <= _burnAltitude * SafetyFactor)
+                _state = State.Braking;
 
-            if (_state == State.Coast && h <= _burnAlt * SAFETY_FACTOR)
-            {
-                _state = State.Freada;
-            }
-
-            if (_state == State.Freada && h < FINAL_ALT)
+            if (_state == State.Braking && altitude < FinalAlt)
             {
                 _state = State.Final;
-                _velPid.Reset();
+                _velocityPid.Reset();
             }
 
             switch (_state)
@@ -321,39 +303,24 @@ namespace AutoLanding
                     RunCoast(rocket, dt);
                     break;
 
-                case State.Freada:
-                    RunFreada(
-                        rocket,
-                        engines,
-                        effectiveAccel,
-                        vd,
-                        h,
-                        dt,
-                        localG);
+                case State.Braking:
+                    RunBraking(rocket, engines, effectiveAccel, descentSpeed, altitude, dt, gravity);
                     break;
 
                 case State.Final:
-                    RunFinal(
-                        rocket,
-                        engines,
-                        effectiveAccel,
-                        vd,
-                        h,
-                        dt,
-                        localG);
+                    RunFinal(rocket, engines, effectiveAccel, descentSpeed, altitude, dt, gravity);
                     break;
             }
 
-            // ==========================
-            // GOVERNADOR DE EMERGÊNCIA
-            // ==========================
-            // Dois critérios independentes (OR):
-            //   1. burnAlt ≥ 85% de h: foguete consumiu quase todo o espaço de frenagem
-            //      → dispara antes de 30 m/s para foguetes de baixo TWR (ex: TWR=1.2 a 73m/16ms → burnAlt/h=0.92)
-            //   2. Limite absoluto: abaixo de 200m ainda acima de 30 m/s
-            bool nearLimit   = _burnAlt > 0 && h > 1 && (_burnAlt / h) >= EMERGENCY_BURN_RATIO;
-            bool absOverspeed = h < EMERGENCY_ALT && vd > EMERGENCY_VD;
-            bool nearSuicide  = _vProfile > 0 && vd >= _vProfile * 0.90;
+            // Emergency governor — two independent triggers (OR):
+            //   1. burnAltitude ≥ 85% of altitude: almost out of braking room
+            //      (fires before 30 m/s for low-TWR rockets, e.g. TWR=1.2 at 73m → burnAlt/h=0.92)
+            //   2. Absolute overspeed: below 200m and still above 30 m/s
+            bool nearLimit = _burnAltitude > 0
+                && altitude > MinAltitudeForBurnRatio
+                && (_burnAltitude / altitude) >= EmergencyBurnRatio;
+            bool absOverspeed = altitude < EmergencyAlt && descentSpeed > EmergencyVd;
+            bool nearSuicide = _velocityProfile > 0 && descentSpeed >= _velocityProfile * NearSuicideThreshold;
 
             if (_state != State.Coast && (nearLimit || absOverspeed || nearSuicide))
             {
@@ -361,20 +328,15 @@ namespace AutoLanding
                 ApplyThrottle(rocket, engines);
             }
 
-            // ==========================
-            // CONTROLE ANGULAR
-            // ==========================
-            _angCtrl.Apply(rocket.rb2d, surfaceNormalDeg, (float)_hVel);
+            _attitudeController.Apply(rocket.rb2d, surfaceNormalDeg, (float)_horizontalVelocity);
         }
 
         private void RunCoast(Rocket rocket, float dt)
         {
             SmoothThrottle(0f, dt);
 
-            if (_throttle < 0.01f)
-            {
+            if (_throttle < ThrottleCutThreshold)
                 CutEngines(rocket);
-            }
             else
             {
                 rocket.throttle.throttleOn.Value = true;
@@ -382,74 +344,62 @@ namespace AutoLanding
             }
         }
 
-        private void RunFreada(
+        private void RunBraking(
             Rocket rocket,
             EngineModule[] engines,
             float effectiveAccel,
-            double vd,
-            double h,
+            double descentSpeed,
+            double altitude,
             float dt,
-            float localG)
+            float gravity)
         {
-            double vSuicide  = _vProfile * 0.85;
-            double vFreefall = Math.Sqrt(2.0 * localG * h) * 0.32;
-            double targetSpeed = Math.Max((double)V_TOUCH, Math.Min(vSuicide, vFreefall));
+            double vSuicide = _velocityProfile * BrakingProfileMargin;
+            double vFreefall = Math.Sqrt(2.0 * gravity * altitude) * FreefallFraction;
+            double targetSpeed = Math.Max(VTouch, Math.Min(vSuicide, vFreefall));
 
-            float speedErr = (float)(vd - targetSpeed);
+            float speedError = (float)(descentSpeed - targetSpeed);
+            float hoverThrottle = gravity / effectiveAccel;
 
-            float hoverThrottle = localG / effectiveAccel;
-
-            // PID roda sempre (sem reset ao ultrapassar alvo).
-            // Clamp >= 0: só adiciona throttle acima do hover, nunca subtrai.
-            // Evita os picos do reset discreto que causavam throttle piscando.
-            float pid = Mathf.Max(0f, _velPid.Update(speedErr, dt));
+            // PID runs continuously (no reset on target crossing).
+            // Clamped ≥ 0: only adds throttle above hover, never subtracts.
+            // Avoids discrete-reset spikes that caused throttle flicker.
+            float pid = Mathf.Max(0f, _velocityPid.Update(speedError, dt));
 
             float targetThrottle = hoverThrottle + pid;
 
-            // emergência
-            if (h < FINAL_ALT * 3 && vd > targetSpeed * 1.3)
-            {
+            if (altitude < FinalAlt * 3 && descentSpeed > targetSpeed * BrakingEmergencyFactor)
                 targetThrottle = 1f;
-            }
 
-            targetThrottle = Mathf.Clamp(targetThrottle, 0f, 1f);
-
-            SmoothThrottle(targetThrottle, dt);
-
+            SmoothThrottle(Mathf.Clamp(targetThrottle, 0f, 1f), dt);
             ApplyThrottle(rocket, engines);
         }
 
-        // ========================================
-        // FINAL LANDING PHASE
-        // ========================================
         private void RunFinal(
             Rocket rocket,
             EngineModule[] engines,
             float effectiveAccel,
-            double vd,
-            double h,
+            double descentSpeed,
+            double altitude,
             float dt,
-            float localG)
+            float gravity)
         {
-            // Rampa linear contínua de vFreefall(FINAL_ALT) até V_TOUCH.
-            // Sem degraus: o erro de velocidade varia suavemente com a altitude.
-            // Usa localG → adapta-se à Lua, Marte etc.
-            double vTop = 0.32 * Math.Sqrt(2.0 * localG * FINAL_ALT);
-            double targetSpeed = Math.Max(V_TOUCH, V_TOUCH + (h / FINAL_ALT) * (vTop - V_TOUCH));
+            // Continuous linear ramp from vFreefall(FinalAlt) down to VTouch.
+            // No step-changes: velocity error varies smoothly with altitude.
+            // Uses gravity so the ramp adapts to Moon, Mars, etc.
+            double vTop = FreefallFraction * Math.Sqrt(2.0 * gravity * FinalAlt);
+            double targetSpeed = Math.Max(VTouch, VTouch + (altitude / FinalAlt) * (vTop - VTouch));
 
-            float error = (float)(vd - targetSpeed);
+            float speedError = (float)(descentSpeed - targetSpeed);
+            float hoverThrottle = gravity / effectiveAccel;
+            float pid = _velocityPid.Update(speedError, dt);
 
-            float hoverThrottle = localG / effectiveAccel;
-
-            float pid = _velPid.Update(error, dt);
-
-            // Permite PID levemente negativo para que o foguete acelere suavemente
-            // se freou demais (sem cair em queda livre). Floor: no máximo 10% abaixo do hover.
-            float floor = Mathf.Max(0.10f, hoverThrottle - 0.10f);
+            // Allow slightly negative PID so the rocket can gently re-accelerate if it
+            // braked too hard — floor prevents free-fall (at most ThrottleFloorMargin below hover).
+            float floor = Mathf.Max(ThrottleFloorMargin, hoverThrottle - ThrottleFloorMargin);
             float targetThrottle = Mathf.Clamp(hoverThrottle + pid, floor, 1f);
 
-            if (h < 2.5 && vd > 1.2) targetThrottle = 1f;
-            if (h < 0.8 && vd > 0.6) targetThrottle = 1f;
+            if (altitude < FinalFlareAlt1 && descentSpeed > FinalFlareVd1) targetThrottle = 1f;
+            if (altitude < FinalFlareAlt2 && descentSpeed > FinalFlareVd2) targetThrottle = 1f;
 
             SmoothThrottle(targetThrottle, dt);
             ApplyThrottle(rocket, engines);
@@ -457,19 +407,11 @@ namespace AutoLanding
 
         private void SmoothThrottle(float target, float dt)
         {
-            float rate = target > _throttle
-                ? THR_RISE
-                : THR_FALL;
-
-            _throttle = Mathf.MoveTowards(
-                _throttle,
-                target,
-                rate * dt);
+            float rate = target > _throttle ? ThrRise : ThrFall;
+            _throttle = Mathf.MoveTowards(_throttle, target, rate * dt);
         }
 
-        private void ApplyThrottle(
-            Rocket rocket,
-            EngineModule[] engines)
+        private void ApplyThrottle(Rocket rocket, EngineModule[] engines)
         {
             foreach (var e in engines)
                 e.engineOn.Value = true;
@@ -488,14 +430,14 @@ namespace AutoLanding
         {
             _state = State.Coast;
             _throttle = 0f;
-            _burnAlt = 0;
-            _vProfile = 0;
-            _twr = 0f;
-            _hVel = 0;
-            _velPid.Reset();
+            _burnAltitude = 0;
+            _velocityProfile = 0;
+            _thrustWeightRatio = 0f;
+            _horizontalVelocity = 0;
+            _velocityPid.Reset();
         }
 
-        private static Rocket GetRocket()
+        private static Rocket? GetRocket()
             => PlayerController.main?.player?.Value as Rocket;
     }
 }
