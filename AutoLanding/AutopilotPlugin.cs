@@ -83,12 +83,7 @@ namespace AutoLanding
             => NormalizeDeg(rb2d.rotation);
 
         private static float NormalizeDeg(float deg)
-        {
-            deg %= 360f;
-            if (deg > 180f)  deg -= 360f;
-            if (deg < -180f) deg += 360f;
-            return deg;
-        }
+            => ((deg + 180f) % 360f + 360f) % 360f - 180f;
     }
 
     [BepInPlugin("com.sfsmod.autolanding", "Auto Landing", "3.1.0")]
@@ -176,6 +171,9 @@ namespace AutoLanding
         private float _thrustWeightRatio = 0f;
         private double _horizontalVelocity = 0;
 
+        private Rocket? _cachedRocket;
+        private EngineModule[] _cachedEngines = Array.Empty<EngineModule>();
+
         private Rect _windowRect = new Rect(10, 120, 320, 210);
 
         private void OnGUI()
@@ -214,6 +212,16 @@ namespace AutoLanding
 
         private void FixedUpdate()
         {
+            try { FixedUpdateInternal(); }
+            catch (Exception ex)
+            {
+                AutoLandingPlugin.Log.LogError($"Autopilot error: {ex}");
+                ResetAll();
+            }
+        }
+
+        private void FixedUpdateInternal()
+        {
             var rocket = GetRocket();
 
             if (rocket == null || rocket.rb2d == null)
@@ -244,7 +252,7 @@ namespace AutoLanding
             // World-space angle the rocket must have to point radially outward.
             float surfaceNormalDeg = (float)(posAngle * 180.0 / Math.PI) - 90f;
 
-            var engines = rocket.partHolder.GetModules<EngineModule>();
+            var engines = GetEngines(rocket);
             float maxThrust = engines.Sum(e => e.thrust.Value);
             float mass = rocket.rb2d.mass;
 
@@ -279,8 +287,8 @@ namespace AutoLanding
             if (altitude < LandAlt && Math.Abs(descentSpeed) < LandingVSpeedThreshold)
             {
                 _state = State.Landed;
+                _velocityPid.Reset();
                 CutEngines(rocket);
-                ResetAll();
                 return;
             }
 
@@ -434,7 +442,18 @@ namespace AutoLanding
             _velocityProfile = 0;
             _thrustWeightRatio = 0f;
             _horizontalVelocity = 0;
+            _cachedRocket = null;
             _velocityPid.Reset();
+        }
+
+        private EngineModule[] GetEngines(Rocket rocket)
+        {
+            if (!ReferenceEquals(rocket, _cachedRocket))
+            {
+                _cachedRocket = rocket;
+                _cachedEngines = rocket.partHolder.GetModules<EngineModule>();
+            }
+            return _cachedEngines;
         }
 
         private static Rocket? GetRocket()
