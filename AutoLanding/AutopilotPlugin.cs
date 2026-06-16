@@ -122,7 +122,6 @@ namespace AutoLanding
     {
         // Phase thresholds
         private const float FinalAlt = 25f;
-        private const float LandAlt = 0.3f;
         private const float VTouch = 0.35f;
         private const double SafetyFactor = 1.35;
 
@@ -146,7 +145,6 @@ namespace AutoLanding
         private const float FinalFlareVd2 = 0.6f;
 
         // Misc
-        private const float LandingVSpeedThreshold = 0.5f;
         private const float MinCosAngle = 0.5f;
         private const float ThrottleCutThreshold = 0.01f;
         private const float ThrRise = 12f;
@@ -170,6 +168,7 @@ namespace AutoLanding
         private double _burnAltitude = 0;
         private float _thrustWeightRatio = 0f;
         private double _horizontalVelocity = 0;
+        private double _prevDescentSpeed = 0;
 
         private Rocket? _cachedRocket;
         private EngineModule[] _cachedEngines = Array.Empty<EngineModule>();
@@ -216,6 +215,9 @@ namespace AutoLanding
             catch (Exception ex)
             {
                 AutoLandingPlugin.Log.LogError($"Autopilot error: {ex}");
+                var rocket = GetRocket();
+                if (rocket != null)
+                    CutEngines(rocket);
                 ResetAll();
             }
         }
@@ -283,8 +285,8 @@ namespace AutoLanding
                 return;
             }
 
-            // Landing detection
-            if (altitude < LandAlt && Math.Abs(descentSpeed) < LandingVSpeedThreshold)
+            // Landing detection: was descending above VTouch, now nearly stopped.
+            if (_state == State.Final && _prevDescentSpeed > VTouch && descentSpeed < VTouch * 0.5)
             {
                 _state = State.Landed;
                 _velocityPid.Reset();
@@ -337,6 +339,7 @@ namespace AutoLanding
             }
 
             _attitudeController.Apply(rocket.rb2d, surfaceNormalDeg, (float)_horizontalVelocity);
+            _prevDescentSpeed = descentSpeed;
         }
 
         private void RunCoast(Rocket rocket, float dt)
@@ -428,8 +431,11 @@ namespace AutoLanding
             rocket.throttle.throttlePercent.Value = _throttle;
         }
 
-        private static void CutEngines(Rocket rocket)
+        private void CutEngines(Rocket rocket)
         {
+            foreach (var e in _cachedEngines)
+                e.engineOn.Value = false;
+
             rocket.throttle.throttleOn.Value = false;
             rocket.throttle.throttlePercent.Value = 0f;
         }
@@ -442,6 +448,7 @@ namespace AutoLanding
             _velocityProfile = 0;
             _thrustWeightRatio = 0f;
             _horizontalVelocity = 0;
+            _prevDescentSpeed = 0;
             _cachedRocket = null;
             _velocityPid.Reset();
         }
