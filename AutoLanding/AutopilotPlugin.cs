@@ -122,7 +122,6 @@ namespace AutoLanding
     {
         // Phase thresholds
         private const float FinalAlt = 25f;
-        private const float LandAlt = 0.3f;
         private const float VTouch = 0.35f;
         private const double SafetyFactor = 1.35;
 
@@ -146,7 +145,6 @@ namespace AutoLanding
         private const float FinalFlareVd2 = 0.6f;
 
         // Misc
-        private const float LandingVSpeedThreshold = 0.5f;
         private const float MinCosAngle = 0.5f;
         private const float ThrottleCutThreshold = 0.01f;
         private const float ThrRise = 12f;
@@ -173,8 +171,15 @@ namespace AutoLanding
 
         private Rocket? _cachedRocket;
         private EngineModule[] _cachedEngines = Array.Empty<EngineModule>();
+        private int _terrainLayer;
+        private static readonly Collider2D[] _surfaceContacts = new Collider2D[5];
 
         private Rect _windowRect = new Rect(10, 120, 320, 210);
+
+        private void Awake()
+        {
+            _terrainLayer = LayerMask.NameToLayer("Celestial Body");
+        }
 
         private void OnGUI()
         {
@@ -216,6 +221,9 @@ namespace AutoLanding
             catch (Exception ex)
             {
                 AutoLandingPlugin.Log.LogError($"Autopilot error: {ex}");
+                var rocket = GetRocket();
+                if (rocket != null)
+                    CutEngines(rocket);
                 ResetAll();
             }
         }
@@ -283,8 +291,7 @@ namespace AutoLanding
                 return;
             }
 
-            // Landing detection
-            if (altitude < LandAlt && Math.Abs(descentSpeed) < LandingVSpeedThreshold)
+            if (_state != State.Coast && descentSpeed < VTouch && IsOnSurface(rocket))
             {
                 _state = State.Landed;
                 _velocityPid.Reset();
@@ -428,8 +435,11 @@ namespace AutoLanding
             rocket.throttle.throttlePercent.Value = _throttle;
         }
 
-        private static void CutEngines(Rocket rocket)
+        private void CutEngines(Rocket rocket)
         {
+            foreach (var e in _cachedEngines)
+                e.engineOn.Value = false;
+
             rocket.throttle.throttleOn.Value = false;
             rocket.throttle.throttlePercent.Value = 0f;
         }
@@ -454,6 +464,15 @@ namespace AutoLanding
                 _cachedEngines = rocket.partHolder.GetModules<EngineModule>();
             }
             return _cachedEngines;
+        }
+
+        private bool IsOnSurface(Rocket rocket)
+        {
+            int count = rocket.rb2d.GetContacts(_surfaceContacts);
+            for (int i = 0; i < count; i++)
+                if (_surfaceContacts[i] != null && _surfaceContacts[i].gameObject.layer == _terrainLayer)
+                    return true;
+            return false;
         }
 
         private static Rocket? GetRocket()
