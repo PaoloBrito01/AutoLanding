@@ -168,12 +168,18 @@ namespace AutoLanding
         private double _burnAltitude = 0;
         private float _thrustWeightRatio = 0f;
         private double _horizontalVelocity = 0;
-        private double _prevDescentSpeed = 0;
 
         private Rocket? _cachedRocket;
         private EngineModule[] _cachedEngines = Array.Empty<EngineModule>();
+        private int _terrainLayer;
+        private static readonly Collider2D[] _surfaceContacts = new Collider2D[5];
 
         private Rect _windowRect = new Rect(10, 120, 320, 210);
+
+        private void Awake()
+        {
+            _terrainLayer = LayerMask.NameToLayer("Celestial Body");
+        }
 
         private void OnGUI()
         {
@@ -285,8 +291,7 @@ namespace AutoLanding
                 return;
             }
 
-            // Landing detection: was descending above VTouch, now nearly stopped.
-            if (_state == State.Final && _prevDescentSpeed > VTouch && descentSpeed < VTouch * 0.5)
+            if (_state != State.Coast && descentSpeed < VTouch && IsOnSurface(rocket))
             {
                 _state = State.Landed;
                 _velocityPid.Reset();
@@ -339,7 +344,6 @@ namespace AutoLanding
             }
 
             _attitudeController.Apply(rocket.rb2d, surfaceNormalDeg, (float)_horizontalVelocity);
-            _prevDescentSpeed = descentSpeed;
         }
 
         private void RunCoast(Rocket rocket, float dt)
@@ -448,7 +452,6 @@ namespace AutoLanding
             _velocityProfile = 0;
             _thrustWeightRatio = 0f;
             _horizontalVelocity = 0;
-            _prevDescentSpeed = 0;
             _cachedRocket = null;
             _velocityPid.Reset();
         }
@@ -461,6 +464,15 @@ namespace AutoLanding
                 _cachedEngines = rocket.partHolder.GetModules<EngineModule>();
             }
             return _cachedEngines;
+        }
+
+        private bool IsOnSurface(Rocket rocket)
+        {
+            int count = rocket.rb2d.GetContacts(_surfaceContacts);
+            for (int i = 0; i < count; i++)
+                if (_surfaceContacts[i] != null && _surfaceContacts[i].gameObject.layer == _terrainLayer)
+                    return true;
+            return false;
         }
 
         private static Rocket? GetRocket()
